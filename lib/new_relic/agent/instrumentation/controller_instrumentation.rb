@@ -1,28 +1,21 @@
-
-module NewRelic::Agent::Instrumentation
-  # == NewRelic instrumentation for controllers
+require 'new_relic/agent/instrumentation/metric_frame'
+module NewRelic
+  module Agent
+    module Instrumentation
+  # == NewRelic instrumentation for controller actions and tasks
   #
-  # This instrumentation is applied to the action controller by default if the agent
-  # is actively collecting statistics.  It will collect statistics for the 
-  # given action.
+  # This instrumentation is applied to the action controller to collect
+  # metrics for every web request.
   #
-  # In cases where you don't want to instrument the top level action, but instead
-  # have other methods which are dispatched to by your action, and you want to treat
-  # these as distinct actions, then what you need to do is use
+  # It can also be used to capture performance information for 
+  # background tasks and other non-web transactions, including
+  # detailed transaction traces and traced errors.
+  #
+  # For details on how to instrument background tasks see
+  # ClassMethods#add_transaction_tracer and
   # #perform_action_with_newrelic_trace
   #
   module ControllerInstrumentation
-    
-    if defined? JRuby
-      @@newrelic_java_classes_missing = false
-      begin
-        require 'java'
-        include_class 'java.lang.management.ManagementFactory'
-        include_class 'com.sun.management.OperatingSystemMXBean'
-      rescue
-        @@newrelic_java_classes_missing = true
-      end
-    end
     
     def self.included(clazz) # :nodoc:
       clazz.extend(ClassMethods)
@@ -112,24 +105,43 @@ module NewRelic::Agent::Instrumentation
       #     add_transaction_tracer :forward
       #   end
       #
+      # Here's an example of how to pass contextual information into the transaction
+      # so it will appear in transaction traces:
+      #
+      #   class Job
+      #     include NewRelic::Agent::Instrumentation::ControllerInstrumentation
+      #     def process(account)
+      #        ...
+      #     end
+      #     # Include the account name in the transaction details.  Note the single
+      #     # quotes to defer eval until call time.
+      #     add_transaction_tracer :process, :params => '{ :account_name => args[0].name }'
+      #   end
+      #
       # See NewRelic::Agent::Instrumentation::ControllerInstrumentation#perform_action_with_newrelic_trace
       # for the full list of available options.
       #
       def add_transaction_tracer(method, options={})
         # The metric path:
         options[:name] ||= method.to_s
+        # create the argument list:
         options_arg = []
         options.each do |key, value|
-          options_arg << %Q[:#{key} => #{value.is_a?(Symbol) ? value.inspect : %Q["#{value.to_s}"]}]
+          valuestr = case
+          when value.is_a?(Symbol)
+            value.inspect
+          when key == :params
+            value.to_s
+          else
+              %Q["#{value.to_s}"]
+          end
+          options_arg << %Q[:#{key} => #{valuestr}]
         end
         class_eval <<-EOC
         def #{method.to_s}_with_newrelic_transaction_trace(*args, &block)
-          NewRelic::Agent::Instrumentation::DispatcherInstrumentation.newrelic_dispatcher_start
           perform_action_with_newrelic_trace(#{options_arg.join(',')}) do
             #{method.to_s}_without_newrelic_transaction_trace(*args, &block)
           end
-        ensure
-          NewRelic::Agent::Instrumentation::DispatcherInstrumentation.newrelic_dispatcher_finish
         end
         EOC
         alias_method "#{method.to_s}_without_newrelic_transaction_trace", method.to_s
@@ -149,6 +161,9 @@ module NewRelic::Agent::Instrumentation
     # default instrumentation on controller actions in Rails and Merb.
     # But it can also be used in custom instrumentation of controller
     # methods and background tasks.
+    #
+    # This is the method invoked by instrumentation added by the
+    # <tt>ClassMethods#add_transaction_tracer</tt>.  
     #
     # Here's a more verbose version of the example shown in
     # <tt>ClassMethods#add_transaction_tracer</tt> using this method instead of
@@ -174,17 +189,9 @@ module NewRelic::Agent::Instrumentation
     #     newrelic_ignore :only => 'invoke_operation'
     #   end
     #
-    # By passing a block in combination with specific arguments, you can 
-    # invoke this directly to capture high level information in
-    # several contexts:
     #
-    # * Pass <tt>:category => :controller</tt> and <tt>:name => actionname</tt>
-    #   to treat the block as if it were a controller action, invoked
-    #   inside a real action.  <tt>:name</tt> is the name of the method, and is
-    #   used in the metric name.
-    #
-    # When invoked directly, pass in a block to measure with some
-    # combination of options:
+    # When invoking this method explicitly as in the example above, pass in a 
+    # block to measure with some combination of options:
     #
     # * <tt>:category => :controller</tt> indicates that this is a
     #   controller action and will appear with all the other actions.  This
@@ -201,6 +208,13 @@ module NewRelic::Agent::Instrumentation
     #   as in many REST URIs.
     # * <tt>:name => action_name</tt> is used to specify the action
     #   name used as part of the metric name
+    # * <tt>:params => {...}</tt> to provide information about the context
+    #   of the call, used in transaction trace display, for example:
+    #   <tt>:params => { :account => @account.name, :file => file.name }</tt>
+    #   These are treated similarly to request parameters in web transactions.
+    #
+    # Seldomly used options:
+    #
     # * <tt>:force => true</tt> indicates you should capture all
     #   metrics even if the #newrelic_ignore directive was specified
     # * <tt>:class_name => aClass.name</tt> is used to override the name
@@ -209,109 +223,67 @@ module NewRelic::Agent::Instrumentation
     # * <tt>:path => metric_path</tt> is *deprecated* in the public API.  It
     #   allows you to set the entire metric after the category part.  Overrides
     #   all the other options.
+    # * <tt>:request => Rack::Request#new(env)</tt> is used to pass in a 
+    #   request object that may respond to uri and referer.
     #
     # If a single argument is passed in, it is treated as a metric
     # path.  This form is deprecated.
     def perform_action_with_newrelic_trace(*args, &block)
-
+      
+      NewRelic::Agent.instance.ensure_worker_thread_started
+      
       # Skip instrumentation based on the value of 'do_not_trace' and if 
       # we aren't calling directly with a block.
       if !block_given? && _is_filtered?('do_not_trace')
-        # Tell the dispatcher instrumentation that we ignored this action and it shouldn't
-        # be counted for the overall HTTP operations measurement.
-        Thread.current[:newrelic_ignore_controller] = true
         # Also ignore all instrumentation in the call sequence
         NewRelic::Agent.disable_all_tracing do
           return perform_action_without_newrelic_trace(*args)
         end
       end
-
-      agent = NewRelic::Agent.instance
-      stats_engine = agent.stats_engine
       
-      # reset this in case we came through a code path where the top level controller is ignored
-      Thread.current[:newrelic_ignore_controller] = nil
-      apdex_start = (Thread.current[:started_on] || Thread.current[:newrelic_dispatcher_start] || Time.now).to_f
-      force = false
-      # If a block was passed in, then the arguments represent options for the instrumentation,
-      # not app method arguments.
-      if block_given? && args.any?
-        force = args.last.is_a?(Hash) && args.last[:force]
-        category, path = _convert_args_to_path(args)
-      else
-        category = 'Controller'
-        path = newrelic_metric_path
-      end
-      metric_name = category + '/' + path 
-
-      return perform_action_with_newrelic_profile(metric_name, path, args, &block) if NewRelic::Control.instance.profiling?
-
-      start = Time.now.to_f
-      agent.ensure_worker_thread_started
+      return perform_action_with_newrelic_profile(args, &block) if NewRelic::Control.instance.profiling?
       
-      NewRelic::Agent.trace_execution_scoped [metric_name, "Controller"], :force => force do
-        # Last one (innermost) to set the transaction name on the call stack wins.
-        stats_engine.transaction_name = metric_name
-        available_params = self.respond_to?(:params) ? params : {} 
-        local_params = (respond_to? :filter_parameters) ? filter_parameters(available_params) : available_params
-        available_request = (respond_to? :request) ? request : nil
-        agent.transaction_sampler.notice_transaction(path, available_request, local_params)
-        
-        jruby_cpu_start = _jruby_cpu_time
-        process_cpu_start = _process_cpu
-        failed = false
-        
-        begin
-          # run the action
-          if block_given?
-            yield
-          else
-            perform_action_without_newrelic_trace(*args)
-          end
-        rescue Exception => e
-          failed = true
-          raise e
-        ensure
-          if NewRelic::Agent.is_execution_traced?
-            cpu_burn = nil
-            if process_cpu_start
-              cpu_burn = _process_cpu - process_cpu_start
-            elsif jruby_cpu_start
-              cpu_burn = _jruby_cpu_time - jruby_cpu_start
-              stats_engine.get_stats_no_scope(NewRelic::Metrics::USER_TIME).record_data_point(cpu_burn)
+      frame_data = _push_metric_frame(block_given? ? args : [])
+      begin      
+        NewRelic::Agent.trace_execution_scoped frame_data.recorded_metrics, :force => frame_data.force_flag do
+          frame_data.start_transaction
+          begin
+            NewRelic::Agent::BusyCalculator.dispatcher_start frame_data.start
+            if block_given?
+              yield
+            else
+              perform_action_without_newrelic_trace(*args)
             end
-            agent.transaction_sampler.notice_transaction_cpu_time(cpu_burn) if cpu_burn
-            
-            # do the apdex bucketing
-            #
-            unless _is_filtered?('ignore_apdex')
-              ending = Time.now.to_f
-              # this uses the start of the dispatcher or the mongrel
-              # thread: causes apdex to show too little capacity
-              apdex_overall(apdex_start, ending, failed)
-              # this uses the start time of the controller action:
-              # does not include capacity problems since those aren't
-              # per controller
-              apdex_controller(start, ending, failed, path)
-            end
+          rescue Exception => e
+            frame_data.notice_error(e)
+            raise
           end
         end
+      ensure
+        NewRelic::Agent::BusyCalculator.dispatcher_finish
+        # Look for a metric frame in the thread local and process it.
+        # Clear the thread local when finished to ensure it only gets called once.
+        frame_data.record_apdex unless _is_filtered?('ignore_apdex')
+        frame_data.pop
       end
     end
-    
-    # Experimental
-    def perform_action_with_newrelic_profile(metric_name, path, args)
-      agent = NewRelic::Agent.instance
-      stats_engine = agent.stats_engine
-      NewRelic::Agent.trace_execution_scoped [metric_name, "Controller"] do
-        stats_engine.transaction_name = metric_name
-        NewRelic::Agent.disable_all_tracing do
-          available_params = self.respond_to?(:params) ? params : {} 
-          # Not sure if we need to get the params and request...
-          local_params = (respond_to? :filter_parameters) ? filter_parameters(available_params) : available_params
-          available_request = (respond_to? :request) ? request : nil
-          agent.transaction_sampler.notice_transaction(path, available_request, local_params)
 
+    protected
+    # Should be implemented in the dispatcher class
+    def newrelic_response_code; end
+    
+    def newrelic_request_headers
+      self.respond_to?(:request) && self.request.respond_to?(:headers) && self.request.headers
+    end
+    
+    private
+    
+    # Profile the instrumented call.  Dev mode only.  Experimental. 
+    def perform_action_with_newrelic_profile(args)
+      frame_data = _push_metric_frame(block_given? ? args : [])
+      NewRelic::Agent.trace_execution_scoped frame_data.metric_name do
+        MetricFrame.current(true).start_transaction
+        NewRelic::Agent.disable_all_tracing do
           # turn on profiling
           profile = RubyProf.profile do
             if block_given?
@@ -320,72 +292,66 @@ module NewRelic::Agent::Instrumentation
               perform_action_without_newrelic_trace(*args)
             end
           end
-          agent.transaction_sampler.notice_profile profile
+          NewRelic::Agent.instance.transaction_sampler.notice_profile profile
         end
       end
+    ensure
+      frame_data.pop
     end
     
-  private
-  
-    def apdex_overall_stat
-      NewRelic::Agent.instance.stats_engine.get_custom_stats("Apdex", NewRelic::ApdexStats)  
-    end
-    
-    def apdex_overall(start, ending, failed)
-      record_apdex(apdex_overall_stat, (ending - start), failed)
-    end
-    
-    def apdex_controller(start, ending, failed, path)
-      controller_stat = NewRelic::Agent.instance.stats_engine.get_custom_stats("Apdex/#{path}", NewRelic::ApdexStats)
-      record_apdex(controller_stat, (ending - start), failed)
-    end
-    
-    def record_apdex(stat, duration, failed)
-      apdex_t = NewRelic::Control.instance.apdex_t
-      case
-        when failed
-        stat.record_apdex_f
-        when duration <= apdex_t
-        stat.record_apdex_s
-        when duration <= 4 * apdex_t
-        stat.record_apdex_t
+    # Write a metric frame onto a thread local if there isn't already one there.
+    # If there is one, just update it.
+    def _push_metric_frame(args) # :nodoc:
+      frame_data = NewRelic::Agent::Instrumentation::MetricFrame.current(true)
+      
+      frame_data.apdex_start ||= _detect_upstream_wait(frame_data.start)
+      _record_queue_length 
+      # If a block was passed in, then the arguments represent options for the instrumentation,
+      # not app method arguments.
+      if args.any?
+        if options = args.last.is_a?(Hash) && args.last
+          frame_data.force_flag = options[:force] 
+          frame_data.request = options[:request] if options[:request]
+        end
+        category, path, available_params = _convert_args_to_path(args)
       else
-        stat.record_apdex_f
+        category = 'Controller'
+        path = newrelic_metric_path
+        available_params = self.respond_to?(:params) ? self.params : {}
+        frame_data.request = self.request if self.respond_to? :request
       end
+      frame_data.push(category, path)
+      frame_data.filtered_params = (respond_to? :filter_parameters) ? filter_parameters(available_params) : available_params
+      frame_data
     end
-    
-    protected
-    
+        
     def _convert_args_to_path(args)
       options =  args.last.is_a?(Hash) ? args.pop : {}
-      category = 'Controller'
+      params = options[:params] || {}
+      category = case options[:category]
+        when :controller, nil then 'Controller'
+        when :task then 'OtherTransaction/Background' # 'Task'
+        when :rack then 'Controller/Rack' #'WebTransaction/Rack'
+        when :uri then 'Controller' #'WebTransaction/Uri'
+        when :sinatra then 'Controller/Sinatra' #'WebTransaction/Uri'
+        # for internal use only
+        else options[:category].to_s
+      end
       unless path = options[:path]
-        category = case options[:category]
-          when :controller, nil then 'Controller'
-          when :task then 'Controller/Task' # 'Task'
-          when :rack then 'Controller/Rack' #'WebTransaction/Rack'
-          when :uri then 'Controller' #'WebTransaction/Uri'
-          # for internal use only
-          when :sinatra then 'Controller/Sinatra' #'WebTransaction/Uri'
-        else options[:category].to_s.capitalize
-        end
-        # To be consistent with the ActionController::Base#controller_path used in rails to determine the
-        # metric path, we drop the controller off the end of the path if there is one.
         action = options[:name] || args.first 
-        force = options[:force]
         metric_class = options[:class_name] || (self.is_a?(Class) ? self.name : self.class.name)
-        
         path = metric_class
         path += ('/' + action) if action
       end
-      [category, path]
+      [category, path, params]
     end
+
     # Filter out 
     def _is_filtered?(key)
       ignore_actions = self.class.newrelic_read_attr(key) if self.class.respond_to? :newrelic_read_attr
       case ignore_actions
-        when nil; false
-        when Hash
+      when nil; false
+      when Hash
         only_actions = Array(ignore_actions[:only])
         except_actions = Array(ignore_actions[:except])
         only_actions.include?(action_name.to_sym) || (except_actions.any? && !except_actions.include?(action_name.to_sym))
@@ -393,19 +359,46 @@ module NewRelic::Agent::Instrumentation
         true
       end
     end
-    
-    def _process_cpu
-      return nil if defined? JRuby
-      p = Process.times
-      p.stime + p.utime
+    # Take a guess at a measure representing the number of requests waiting in mongrel
+    # or heroku.
+    def _record_queue_length
+      if newrelic_request_headers
+        if queue_depth = newrelic_request_headers['HTTP_X_HEROKU_QUEUE_DEPTH']
+          queue_depth = queue_depth.to_i rescue nil
+        elsif mongrel = NewRelic::Control.instance.local_env.mongrel
+          # Always subtrace 1 for the active mongrel
+          queue_depth = [mongrel.workers.list.length.to_i - 1, 0].max rescue nil
+        end
+        NewRelic::Agent.agent.stats_engine.get_stats_no_scope('Mongrel/Queue Length').trace_call(queue_depth) if queue_depth
+      end
     end
     
-    def _jruby_cpu_time # :nodoc:
-      return nil unless defined? JRuby and not @@newrelic_java_classes_missing 
-      threadMBean = ManagementFactory.getThreadMXBean()
-      java_utime = threadMBean.getCurrentThreadUserTime()  # ns
-      -1 == java_utime ? 0.0 : java_utime/1e9
+    def _detect_upstream_wait(now)
+      if newrelic_request_headers
+        if entry_time = newrelic_request_headers['HTTP_X_REQUEST_START']
+          if newrelic_request_headers['HTTP_X_HEROKU_QUEUE_DEPTH'] # this is a heroku measure
+            http_entry_time = entry_time.to_f / 1e3
+          else # apache / nginx
+            apache_parsed_time = entry_time[/t=(\d+)/, 1]
+            http_entry_time = apache_parsed_time.to_f/1e6 if apache_parsed_time
+          end
+        end
+      end
+      # If we didn't find the custom header, look for the mongrel timestamp
+      http_entry_time ||= Thread.current[:started_on] and http_entry_time = http_entry_time.to_f
+      if http_entry_time
+        queue_stat = NewRelic::Agent.agent.stats_engine.get_stats_no_scope 'WebFrontend/Mongrel/Average Queue Time'
+        total_time = (now - http_entry_time)
+        queue_stat.trace_call(total_time) unless total_time < 0 # using remote timestamps could lead to negative queue time
+      end
+      http_entry_time || now
+    end
+
+    def _dispatch_stat
+      NewRelic::Agent.agent.stats_engine.get_stats_no_scope 'HttpDispatcher'  
     end
     
   end 
 end  
+end
+end

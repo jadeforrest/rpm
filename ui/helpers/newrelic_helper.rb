@@ -199,7 +199,7 @@ module NewrelicHelper
     
     classes << "segment#{segment.parent_segment.segment_id}" if depth > 1 
     
-    classes << "view_segment" if segment.metric_name.starts_with?('View')
+    classes << "view_segment" if segment.metric_name.index('View') == 0
     classes << "summary_segment" if segment.is_a?(NewRelic::TransactionSample::CompositeSegment)
     
     classes.join(' ')
@@ -270,15 +270,18 @@ module NewrelicHelper
   end
   
   def exclude_file_from_stack_trace?(file, include_rails)
-    !include_rails && (
-                       file =~ /\/active(_)*record\// ||
-    file =~ /\/action(_)*controller\// ||
-    file =~ /\/activesupport\// ||
-    file =~ /\/lib\/mongrel/ ||
-    file =~ /\/actionpack\// ||
-    file =~ /\/passenger\// ||
-    file =~ /\/benchmark.rb/ ||
-    file !~ /\.rb/)                  # must be a .rb file, otherwise it's a script of something else...we could have gotten trickier and tried to see if this file exists...
+    return false if include_rails
+    return true if file !~ /\.(rb|java)/
+    %w[/actionmailer/ 
+             /activerecord 
+             /activeresource 
+             /activesupport 
+             /lib/mongrel 
+             /actionpack 
+             /passenger/
+             /railties
+             benchmark.rb].each { |s| return true if file.include? s }
+     false
   end
   
   def show_view_link(title, page_name)
@@ -311,7 +314,7 @@ module NewrelicHelper
   def profile_table(profile)
     out = StringIO.new
     printer = RubyProf::GraphHtmlPrinter.new(profile)
-    printer.print(out, :min_percent=>0.1)
+    printer.print(out, :min_percent=>0.5)
     out.string[/<body>(.*)<\/body>/im, 0].gsub('<table>', '<table class=profile>')
   end
 end

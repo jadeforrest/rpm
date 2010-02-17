@@ -17,6 +17,21 @@ def assert_between(floor, ceiling, value, message = nil)
   message || "expected #{floor} <= #{value} <= #{ceiling}"
 end
 
+def compare_metrics expected_list, actual_list
+  actual = Set.new actual_list
+  actual.delete('GC/cumulative') # in case we are in REE
+  expected = Set.new expected_list
+  assert_equal expected.to_a.sort, actual.to_a.sort, "extra: #{(actual - expected).to_a.join(", ")}; missing: #{(expected - actual).to_a.join(", ")}"
+end
+=begin Enable this to see test names as they run
+Test::Unit::TestCase.class_eval do
+  def run_with_info *args, &block
+    puts "#{self.class.name.underscore}/#{@method_name}"
+    run_without_info *args, &block
+  end
+  alias_method_chain :run, :info
+end
+=end
 module TransactionSampleTestHelper
   def make_sql_transaction(*sql)
     sampler = NewRelic::Agent::TransactionSampler.new
@@ -29,7 +44,7 @@ module TransactionSampleTestHelper
     sql.each {|sql_statement| sampler.notice_sql(sql_statement, {:adapter => "test"}, 0 ) }
     
     sleep 1.0
-    
+    yield if block_given?
     sampler.notice_pop_scope "a"
     sampler.notice_scope_empty
     

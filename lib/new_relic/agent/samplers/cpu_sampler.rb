@@ -1,10 +1,13 @@
-module NewRelic::Agent::Samplers
+module NewRelic
+  module Agent
+    module Samplers
   class CpuSampler < NewRelic::Agent::Sampler
     attr_reader :last_time
     def initialize
       super :cpu
       poll
     end
+    
     def user_util_stats
       stats_engine.get_stats_no_scope("CPU/User/Utilization")
     end
@@ -19,7 +22,7 @@ module NewRelic::Agent::Samplers
     end
     
     def self.supported_on_this_platform?
-      not defined?(Java)
+      not defined?(JRuby)
     end
     
     def poll
@@ -45,5 +48,7 @@ module NewRelic::Agent::Samplers
       @last_time = now
     end
   end
+end
+end
 end
 

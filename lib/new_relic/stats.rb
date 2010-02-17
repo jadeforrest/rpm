@@ -102,13 +102,16 @@ module NewRelic
     
     def as_percentage_of(other_stats)
       return 0 if other_stats.total_call_time == 0
-      return to_percentage(total_call_time / other_stats.total_call_time)
+      return (total_call_time / other_stats.total_call_time) * 100.0
     end
     
     # the stat total_call_time is a percent
     def as_percentage
-      return 0 if call_count == 0
-      to_percentage(total_call_time / call_count)
+      if call_count.zero?
+        0
+      else
+        (total_call_time / call_count) * 100.0
+      end
     end
     
     def duration
@@ -116,16 +119,17 @@ module NewRelic
     end
 
     def calls_per_minute
-      return 0 if duration.zero?
-      ((call_count / duration.to_f * 6000).round).to_f / 100
-    end
+      if duration.zero?
+        0
+      else
+        (call_count / duration.to_f) * 60.0
+      end
+    end    
     
-    def calls_per_second
-      round_to_2 calls_per_minute / 60
-    end
     def total_call_time_per_minute
       60.0 * time_percentage
     end
+    
     def standard_deviation
       return 0 if call_count < 2 || self.sum_of_squares.nil?
       
@@ -189,7 +193,8 @@ module NewRelic
       min_end = (end_time < s.end_time ? end_time : s.end_time)
       max_begin = (begin_time > s.begin_time ? begin_time : s.begin_time)
       percentage = (min_end - max_begin) / s.duration
-      
+
+      self.total_exclusive_time = s.total_exclusive_time * percentage
       self.total_call_time = s.total_call_time * percentage
       self.min_call_time = s.min_call_time
       self.max_call_time = s.max_call_time
@@ -218,18 +223,11 @@ module NewRelic
     end
 
     private
+    
     def to_ms(number)
       (number*1000).round
     end
-    # utility method that converts floating point percentage values
-    # to integers as a percentage, to improve readability in ui
-    def to_percentage(value)
-      round_to_2(value * 100)
-    end
-    
-    def round_to_2(val)
-      (val * 100).round / 100.0
-    end
+        
     def round_to_3(val)
       (val * 1000).round / 1000.0
     end

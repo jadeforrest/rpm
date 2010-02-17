@@ -5,6 +5,7 @@ class NewRelic::Agent::StatsEngine::SamplersTest < Test::Unit::TestCase
   
   def setup
     @stats_engine = NewRelic::Agent::StatsEngine.new
+    NewRelic::Agent.instance.stubs(:stats_engine).returns(@stats_engine)
   end
   def test_cpu
     s = NewRelic::Agent::Samplers::CpuSampler.new
@@ -52,30 +53,20 @@ class NewRelic::Agent::StatsEngine::SamplersTest < Test::Unit::TestCase
   def test_memory__windows
     return if defined? JRuby
     NewRelic::Agent::Samplers::MemorySampler.any_instance.stubs(:platform).returns 'win32'
-    assert_raise RuntimeError, /Unsupported platform/ do
+    assert_raise NewRelic::Agent::Sampler::Unsupported do
       NewRelic::Agent::Samplers::MemorySampler.new
     end
+  end
+  def test_load_samplers
+    @stats_engine.expects(:add_harvest_sampler).once unless defined? JRuby
+    @stats_engine.expects(:add_sampler).never
+    NewRelic::Control.instance.load_samplers
+    sampler_count = 4
+    assert_equal sampler_count, NewRelic::Agent::Sampler.sampler_classes.size, NewRelic::Agent::Sampler.sampler_classes.inspect
   end
   def test_memory__is_supported
     NewRelic::Agent::Samplers::MemorySampler.stubs(:platform).returns 'windows'
     assert !NewRelic::Agent::Samplers::MemorySampler.supported_on_this_platform? || defined? JRuby
-  end
-  def test_mongrel 
-    NewRelic::Agent::Instrumentation::DispatcherInstrumentation::BusyCalculator.stubs('is_busy?'.to_sym).returns(false)  
-    mongrel = mock()
-    NewRelic::Control.instance.local_env.stubs(:mongrel).returns(mongrel)
-    list = mock()
-    workers = mock()
-    workers.stubs(:list).returns(list)
-    list.stubs(:length).returns(3)
-    mongrel.expects(:workers).returns(workers).at_least_once
-    s = NewRelic::Agent::Samplers::MongrelSampler.new
-    s.stats_engine = @stats_engine
-    s.poll
-    s.poll
-    s.poll
-    assert_equal 3, s.queue_stats.call_count
-    assert_equal 3, s.queue_stats.average_call_time, "mongrel queue length"
   end
   
 end

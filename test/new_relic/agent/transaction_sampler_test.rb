@@ -1,6 +1,6 @@
 require File.expand_path(File.join(File.dirname(__FILE__),'..','..','test_helper')) 
 
-class NewRelic::Agent::TransationSamplerTest < Test::Unit::TestCase
+class NewRelic::Agent::TransactionSamplerTest < Test::Unit::TestCase
   
   module MockGCStats
     
@@ -48,15 +48,15 @@ class NewRelic::Agent::TransationSamplerTest < Test::Unit::TestCase
     @sampler.notice_first_scope_push Time.now.to_f
     @sampler.notice_transaction "/path", nil, {}
     @sampler.notice_push_scope "a"
-
+    
     @sampler.notice_push_scope "b"
     @sampler.notice_pop_scope "b"
-
+    
     @sampler.notice_push_scope "c"
     @sampler.notice_push_scope "d"
     @sampler.notice_pop_scope "d"
     @sampler.notice_pop_scope "c"
-
+    
     @sampler.notice_pop_scope "a"
     @sampler.notice_scope_empty
     sample = @sampler.harvest([],0.0).first
@@ -113,10 +113,10 @@ class NewRelic::Agent::TransationSamplerTest < Test::Unit::TestCase
     not_as_slow = @sampler.harvest(slowest, 0)[0]
     assert not_as_slow == slowest
     
-    run_sample_trace { sleep 0.6 }
+    run_sample_trace { sleep 0.601 }
     new_slowest = @sampler.harvest(slowest, 0)[0]
     assert new_slowest != slowest
-    assert new_slowest.duration >= 0.6
+    assert new_slowest.duration >= 0.600, "Slowest duration must be > 0.6: #{new_slowest.duration}"
   end
   
   

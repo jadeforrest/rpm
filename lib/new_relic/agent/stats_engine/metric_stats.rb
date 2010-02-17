@@ -1,4 +1,5 @@
-module NewRelic::Agent
+module NewRelic
+module Agent
   class StatsEngine
     module MetricStats
       # The stats hash hashes either a metric name for an unscoped metric,
@@ -26,12 +27,12 @@ module NewRelic::Agent
       def get_stats(metric_name, use_scope = true, scoped_metric_only = false)
         
         if scoped_metric_only
-          spec = NewRelic::MetricSpec.new metric_name, transaction_name
+          spec = NewRelic::MetricSpec.new metric_name, scope_name
           stats = stats_hash[spec] ||= NewRelic::MethodTraceStats.new 
         else  
           stats = stats_hash[metric_name] ||= NewRelic::MethodTraceStats.new 
-          if use_scope && transaction_name
-            spec = NewRelic::MetricSpec.new metric_name, transaction_name
+          if use_scope && scope_name && scope_name != metric_name 
+            spec = NewRelic::MetricSpec.new metric_name, scope_name
             scoped_stats = stats_hash[spec] ||= NewRelic::ScopedMethodTraceStats.new(stats) 
             stats = scoped_stats
           end
@@ -39,6 +40,10 @@ module NewRelic::Agent
         stats
       end
       
+      def lookup_stats(metric_name, scope_name = nil)
+        stats_hash[NewRelic::MetricSpec.new(metric_name, scope_name)] ||
+        stats_hash[metric_name]
+      end
       # Harvest the timeslice data.  First recombine current statss
       # with any previously
       # unsent metrics, clear out stats cache, and return the current
@@ -80,10 +85,11 @@ module NewRelic::Agent
           # don't bother collecting and reporting stats that have zero-values for this timeslice.
           # significant performance boost and storage savings.
           unless stats_copy.is_reset?
+
+            id = metric_ids[metric_spec]
+            metric_spec_for_transport = id ? nil : metric_spec 
             
-            metric_spec_for_transport = (metric_ids[metric_spec].nil?) ? metric_spec : nil
-            
-            metric_data = NewRelic::MetricData.new(metric_spec_for_transport, stats_copy, metric_ids[metric_spec])
+            metric_data = NewRelic::MetricData.new(metric_spec_for_transport, stats_copy, id)
             
             timeslice_data[metric_spec] = metric_data
           end
@@ -95,7 +101,7 @@ module NewRelic::Agent
       # Remove all stats.  For test code only.
       def clear_stats 
         stats_hash.clear
-        NewRelic::Agent::Instrumentation::DispatcherInstrumentation::BusyCalculator.reset
+        NewRelic::Agent::BusyCalculator.reset
       end
       
       # Reset each of the stats, such as when a new passenger instance starts up.
@@ -108,4 +114,5 @@ module NewRelic::Agent
       end
     end
   end
+end
 end

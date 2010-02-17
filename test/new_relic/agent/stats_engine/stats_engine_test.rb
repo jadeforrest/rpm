@@ -33,11 +33,11 @@ class NewRelic::Agent::StatsEngine::TransactionsTest < Test::Unit::TestCase
   def test_scope__overlap
     NewRelic::Agent.instance.stubs(:stats_engine).returns(@engine)
     
-    @engine.transaction_name = 'orlando'
+    @engine.scope_name = 'orlando'
     self.class.trace_execution_scoped('disney', :deduct_call_time_from_parent => false) { sleep 0.1 }
     orlando_disney = @engine.get_stats 'disney'
     
-    @engine.transaction_name = 'anaheim'
+    @engine.scope_name = 'anaheim'
     self.class.trace_execution_scoped('disney', :deduct_call_time_from_parent => false) { sleep 0.1 }
     anaheim_disney = @engine.get_stats 'disney'
 
@@ -177,7 +177,7 @@ class NewRelic::Agent::StatsEngine::TransactionsTest < Test::Unit::TestCase
   
   private 
   def check_time_approximate(expected, actual)
-    assert((expected - actual).abs < 0.05, "Expected between #{expected - 0.05} and #{expected + 0.05}, got #{actual}")
+    assert((expected - actual).abs < 0.1, "Expected between #{expected - 0.1} and #{expected + 0.1}, got #{actual}")
   end
   
 end

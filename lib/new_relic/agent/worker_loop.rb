@@ -1,4 +1,5 @@
-module NewRelic::Agent
+module NewRelic
+module Agent
   
   # A worker loop executes a set of registered tasks on a single thread.  
   # A task is a proc or block with a specified call period in seconds.  
@@ -35,11 +36,11 @@ module NewRelic::Agent
     
     # add a task to the worker loop.  The task will be called approximately once
     # every call_period seconds.  The task is passed as a block
-    def add_task(call_period, &task_proc)
+    def add_task(call_period, desc="", &task_proc)
       if call_period < MIN_CALL_PERIOD
         raise ArgumentError, "Invalid Call Period (must be > #{MIN_CALL_PERIOD}): #{call_period}" 
       end
-      @tasks << LoopTask.new(call_period, &task_proc)
+      @tasks << LoopTask.new(call_period, desc, &task_proc)
     end
     
     private 
@@ -59,20 +60,16 @@ module NewRelic::Agent
       # next invocation time.
       task = next_task
       
-      # sleep in chunks no longer than 1 second
       while Time.now < task.next_invocation_time
         
         # sleep until this next task's scheduled invocation time
-        sleep_time = [task.next_invocation_time - Time.now, 0.000001].max
-        sleep_time = (sleep_time > 1) ? 1 : sleep_time
-        
-        sleep sleep_time
-        
+        sleep_time = task.next_invocation_time - Time.now
+        sleep sleep_time if sleep_time > 0
         return if !keep_running
       end
       
       begin
-        task.execute
+        task.execute if keep_running
       rescue ServerError => e
         log.debug "Server Error: #{e}"
       rescue NewRelic::Agent::ForceRestartException => e
@@ -92,19 +89,22 @@ module NewRelic::Agent
       rescue Timeout::Error, NewRelic::Agent::IgnoreSilentlyException
         # Want to ignore these because they are handled already
       rescue ScriptError, StandardError => e 
-        log.error "Error running task in Agent Worker Loop (#{e.class}): #{e} " 
+        log.error "Error running task in Agent Worker Loop '#{e}': #{e.backtrace.first}" 
         log.debug e.backtrace.join("\n")
       end
     end
     
     class LoopTask
       
-      def initialize(call_period, &task_proc)
+      def initialize(call_period, desc="", &task_proc) 
         @call_period = call_period
         @last_invocation_time = Time.now
         @task = task_proc
+        @desc = desc
       end
-      
+      def to_s
+        "Task[#{@desc}]"
+      end
       def next_invocation_time
         @last_invocation_time + @call_period
       end
@@ -115,4 +115,5 @@ module NewRelic::Agent
       end
     end
   end
+end
 end

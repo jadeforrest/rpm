@@ -1,4 +1,5 @@
-module NewRelic::Agent
+module NewRelic
+module Agent
   class StatsEngine
         
     # Defines methods that stub out the stats engine methods
@@ -16,12 +17,12 @@ module NewRelic::Agent
     
     module Transactions
       module Shim # :nodoc:
-        def start_transaction; end
+        def start_transaction(*args); end
         def end_transaction; end
         def push_scope(*args); end
         def transaction_sampler=(*args); end
-        def transaction_name=(*args); end
-        def transaction_name; end
+        def scope_name=(*args); end
+        def scope_name; end
         def pop_scope(*args); end
       end
       
@@ -46,10 +47,7 @@ module NewRelic::Agent
             capture_gc_time
           end
         end
-        if @transaction_sampler
-          @transaction_sampler.notice_first_scope_push(time) if stack.empty? 
-          @transaction_sampler.notice_push_scope metric, time
-        end
+        @transaction_sampler.notice_push_scope metric, time if @transaction_sampler
         scope = ScopeStackElement.new(metric, deduct_call_time_from_parent)
         stack.push scope
         scope
@@ -68,11 +66,7 @@ module NewRelic::Agent
             stack.last.children_time += scope.children_time
           end
         end
-        
-        if @transaction_sampler
-          @transaction_sampler.notice_pop_scope(scope.name, time)
-          @transaction_sampler.notice_scope_empty(time) if stack.empty? 
-        end
+        @transaction_sampler.notice_pop_scope(scope.name, time) if @transaction_sampler
         scope
       end
       
@@ -88,16 +82,18 @@ module NewRelic::Agent
       # is invoked via the dispatcher, but conceivably we could use other transaction
       # names in the future if the traced application does more than service http request
       # via controller actions
-      def transaction_name=(transaction)
-        Thread::current[:newrelic_transaction_name] = transaction
+      def scope_name=(transaction)
+        Thread::current[:newrelic_scope_name] = transaction
       end
       
-      def transaction_name
-        Thread::current[:newrelic_transaction_name]
+      def scope_name
+        Thread::current[:newrelic_scope_name]
       end
       
-      def start_transaction
+      # Start a new transaction, unless one is already in progress
+      def start_transaction(name = nil)
         Thread::current[:newrelic_scope_stack] ||= []
+        self.scope_name = name if name
       end
       
       # Try to clean up gracefully, otherwise we leave things hanging around on thread locals.
@@ -109,7 +105,7 @@ module NewRelic::Agent
         
         if stack && stack.empty?
           Thread::current[:newrelic_scope_stack] = nil
-          Thread::current[:newrelic_transaction_name] = nil
+          Thread::current[:newrelic_scope_name] = nil
         end
       end
       
@@ -149,4 +145,5 @@ module NewRelic::Agent
       
     end
   end
+end
 end
